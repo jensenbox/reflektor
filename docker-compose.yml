@@ -1,0 +1,14 @@
+services:
+  reflektor:
+    image: ghcr.io/jensenbox/reflektor:latest
+    container_name: reflektor
+    restart: unless-stopped
+    environment:
+      # The LAN IP this host serves on — used for the self-signed cert's SAN.
+      # Override by editing .env or exporting LAN_IP before `docker compose up`.
+      LAN_IP: ${LAN_IP:-192.168.16.10}
+    ports:
+      - "8443:8443"
+      - "8080:8080"
+    volumes:
+      - ./certs:/app/certs

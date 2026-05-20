@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/sender.webmanifest">
+<link rel="icon" type="image/svg+xml" href="/icon-sender.svg">
+<title>Reflektor — Camera</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+  #preview{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+  .bar{position:fixed;top:0;left:0;right:0;display:flex;gap:8px;padding:10px env(safe-area-inset-right,10px) 10px env(safe-area-inset-left,10px);padding-top:calc(10px + env(safe-area-inset-top,0px));background:linear-gradient(#000a,#0000);align-items:center;z-index:10;flex-wrap:wrap}
+  select,button{font:inherit;background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:10px;padding:10px 14px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+  button.primary{background:#2a8a55;border-color:#3aab6c}
+  button.primary.stop{background:#a02a2a;border-color:#c64242}
+  button:disabled{opacity:.4}
+  select{max-width:42vw;text-overflow:ellipsis}
+  #stat{position:fixed;bottom:8px;left:8px;right:8px;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:6px;z-index:10;white-space:pre-wrap;color:#eaeaea}
+  #dot{width:10px;height:10px;border-radius:50%;background:#888;flex:0 0 auto}
+  #dot.on{background:#4eff7a;box-shadow:0 0 8px #4eff7a88}
+  #dot.warn{background:#ffaa30}
+  #status{font-size:13px;opacity:.85}
+  /* Screen-off / OLED-saver mode: blank everything but keep the camera streaming. */
+  body.blanked{background:#000}
+  body.blanked .bar,body.blanked #preview,body.blanked #stat{display:none}
+  body.blanked #tap{display:flex}
+  #tap{display:none;position:fixed;inset:0;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom,24px);color:#222;font-size:10px;background:#000;z-index:20;-webkit-tap-highlight-color:transparent}
+</style>
+</head>
+<body>
+<video id="preview" autoplay muted playsinline></video>
+<div class="bar">
+  <span id="dot"></span>
+  <span id="status">idle</span>
+  <select id="cam" title="camera"></select>
+  <select id="res" title="resolution">
+    <option value="1920x1080@60">1080p60</option>
+    <option value="1920x1080@30">1080p30</option>
+    <option value="3840x2160@30">2160p30</option>
+    <option value="1280x720@60">720p60</option>
+    <option value="1280x720@30">720p30</option>
+  </select>
+  <select id="codec" title="codec">
+    <option value="H264">H.264</option>
+    <option value="VP8">VP8</option>
+    <option value="VP9">VP9</option>
+    <option value="AV1">AV1</option>
+  </select>
+  <button id="go" class="primary">Start</button>
+  <button id="blank" hidden title="Hide preview to save OLED power">Screen off</button>
+  <button id="lock" hidden title="Lock current screen orientation">Lock</button>
+  <button id="install" hidden title="Install Reflektor as an app">Install</button>
+</div>
+<div id="stat"></div>
+<div id="tap" aria-hidden="true">tap to wake</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const setStatus = (s) => { $('status').textContent = s; };
+  const setDot = (cls) => { $('dot').className = ''; if (cls) $('dot').classList.add(cls); };
+
+  let pc = null, ws = null, sender = null, stream = null, statsTimer = null, wakeLock = null;
+
+  async function acquireWake() {
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+  function releaseWake() {
+    if (wakeLock) { try { wakeLock.release(); } catch {} wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', async () => {
+    // Wake lock is auto-released when the page is hidden; re-acquire when visible.
+    if (!document.hidden && stream && !wakeLock) await acquireWake();
+  });
+
+  function setBlanked(on) {
+    document.body.classList.toggle('blanked', on);
+  }
+  $('blank').onclick = (e) => { e.stopPropagation(); setBlanked(true); };
+  $('tap').addEventListener('click', () => setBlanked(false));
+
+  // Orientation lock (must be triggered by a tap, in PWA or fullscreen).
+  let orientationLocked = false;
+  async function toggleOrientationLock() {
+    const so = screen.orientation;
+    if (!so || !so.lock) { setStatus('orientation lock not supported'); return; }
+    if (orientationLocked) {
+      try { so.unlock(); } catch {}
+      orientationLocked = false;
+      $('lock').textContent = 'Lock';
+      return;
+    }
+    const isStandalone = matchMedia('(display-mode: fullscreen),(display-mode: standalone)').matches;
+    if (!isStandalone && !document.fullscreenElement) {
+      try { await document.documentElement.requestFullscreen(); }
+      catch { setStatus('lock needs fullscreen — install as app or allow fullscreen'); return; }
+    }
+    try {
+      await so.lock(so.type);
+      orientationLocked = true;
+      $('lock').textContent = 'Unlock';
+    } catch (e) {
+      setStatus('lock failed: ' + e.message);
+    }
+  }
+  $('lock').onclick = toggleOrientationLock;
+
+  // PWA install handling
+  let deferredInstall = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstall = e;
+    $('install').hidden = false;
+  });
+  $('install').onclick = async () => {
+    if (!deferredInstall) return;
+    deferredInstall.prompt();
+    await deferredInstall.userChoice.catch(() => {});
+    deferredInstall = null;
+    $('install').hidden = true;
+  };
+  window.addEventListener('appinstalled', () => {
+    deferredInstall = null;
+    $('install').hidden = true;
+  });
+  if ('serviceWorker' in navigator) {
+    addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
+
+  async function listCams() {
+    try {
+      const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+      tmp.getTracks().forEach(t => t.stop());
+    } catch {}
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const cams = devs.filter(d => d.kind === 'videoinput');
+    $('cam').innerHTML = cams.map((c, i) =>
+      `<option value="${c.deviceId}">${(c.label || 'Camera ' + (i+1)).replace(/\s*\(.+\)\s*$/,'')}</option>`
+    ).join('');
+    const rear = cams.find(c => /back|rear|environment/i.test(c.label));
+    if (rear) $('cam').value = rear.deviceId;
+  }
+
+  // Remember the user's choices across reloads.
+  function persistSelect(id) {
+    const el = $(id);
+    const key = 'reflektor:' + id;
+    const saved = localStorage.getItem(key);
+    if (saved && [...el.options].some(o => o.value === saved)) el.value = saved;
+    el.addEventListener('change', () => localStorage.setItem(key, el.value));
+  }
+
+  function preferCodec(transceiver, name) {
+    if (!RTCRtpSender.getCapabilities) return null;
+    const caps = RTCRtpSender.getCapabilities('video');
+    if (!caps) return null;
+    const re = new RegExp(name, 'i');
+    const wanted = caps.codecs.filter(c => re.test(c.mimeType));
+    const rest   = caps.codecs.filter(c => !re.test(c.mimeType));
+    if (wanted.length && transceiver.setCodecPreferences) {
+      // Only the preferred codec — drop the rest so the receiver can't fall back to one it can't actually decode.
+      transceiver.setCodecPreferences(wanted);
+      return wanted[0].mimeType;
+    }
+    return null;
+  }
+
+  async function tuneSender() {
+    if (!sender) return;
+    const params = sender.getParameters();
+    if (!params.encodings || !params.encodings[0]) params.encodings = [{}];
+    params.encodings[0].maxBitrate = 20_000_000; // 20 Mbps cap, plenty for LAN
+    params.encodings[0].priority = 'high';
+    params.encodings[0].networkPriority = 'high';
+    params.degradationPreference = 'maintain-framerate';
+    try { await sender.setParameters(params); } catch (e) { console.warn('setParameters', e); }
+  }
+
+  function parseRes(v) {
+    const m = v.match(/^(\d+)x(\d+)@(\d+)$/);
+    return { w: +m[1], h: +m[2], fps: +m[3] };
+  }
+
+  async function start() {
+    $('go').disabled = true;
+    setStatus('opening camera…');
+    setDot('warn');
+
+    const { w, h, fps } = parseRes($('res').value);
+    const deviceId = $('cam').value;
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          width:  { ideal: w },
+          height: { ideal: h },
+          frameRate: { ideal: fps, min: Math.min(30, fps) },
+        },
+      });
+    } catch (e) {
+      setStatus('camera error: ' + e.message);
+      $('go').disabled = false;
+      return;
+    }
+    $('preview').srcObject = stream;
+
+    setStatus('connecting…');
+    ws = new WebSocket(`wss://${location.host}/ws?role=sender`);
+    ws.onmessage = onWsMessage;
+    ws.onclose = () => { if (pc) setDot('warn'); };
+    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws')); });
+
+    setStatus('waiting for receiver…');
+    startStats();
+    await acquireWake();
+    $('go').textContent = 'Stop';
+    $('go').classList.add('stop');
+    $('go').disabled = false;
+    $('go').onclick = stop;
+    $('blank').hidden = false;
+    $('lock').hidden = false;
+  }
+
+  async function onWsMessage({ data }) {
+    let msg;
+    try { msg = JSON.parse(data); } catch { return; }
+    if (msg.type === 'negotiate') {
+      await negotiate();
+    } else if (msg.type === 'answer' && pc) {
+      await pc.setRemoteDescription(msg).catch((e) => console.warn('setRemoteDescription', e));
+    } else if (msg.type === 'ice' && pc) {
+      await pc.addIceCandidate(msg.candidate).catch(() => {});
+    }
+  }
+
+  async function negotiate() {
+    if (!stream || !ws || ws.readyState !== 1) return;
+    if (pc) { try { pc.close(); } catch {} pc = null; sender = null; }
+    setStatus('negotiating…');
+    setDot('warn');
+
+    pc = new RTCPeerConnection({ iceServers: [] });
+    const track = stream.getVideoTracks()[0];
+    const tx = pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
+    const chosen = preferCodec(tx, $('codec').value);
+    sender = tx.sender;
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+    };
+    pc.onconnectionstatechange = () => {
+      setStatus('webrtc: ' + pc.connectionState);
+      if (pc.connectionState === 'connected') { setDot('on'); tuneSender(); }
+      else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setDot('warn');
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify(offer));
+    setStatus('offer sent' + (chosen ? ' (' + chosen + ')' : ''));
+  }
+
+  function stop() {
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+    if (pc)     { try { pc.close(); } catch {} pc = null; }
+    if (ws)     { try { ws.close(); } catch {} ws = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    sender = null;
+    releaseWake();
+    setBlanked(false);
+    $('preview').srcObject = null;
+    $('stat').textContent = '';
+    setStatus('stopped');
+    setDot('');
+    $('go').textContent = 'Start';
+    $('go').classList.remove('stop');
+    $('go').onclick = start;
+    $('blank').hidden = true;
+    if (orientationLocked) { try { screen.orientation.unlock(); } catch {} orientationLocked = false; }
+    $('lock').textContent = 'Lock';
+    $('lock').hidden = true;
+  }
+
+  function startStats() {
+    if (statsTimer) clearInterval(statsTimer);
+    let lastBytes = 0, lastTs = 0, lastFrames = 0;
+    statsTimer = setInterval(async () => {
+      if (!pc) return;
+      const stats = await pc.getStats();
+      const codecs = new Map();
+      let row;
+      stats.forEach(r => { if (r.type === 'codec') codecs.set(r.id, r); });
+      stats.forEach(r => { if (r.type === 'outbound-rtp' && r.kind === 'video') row = r; });
+      if (!row) return;
+      const dt = (row.timestamp - lastTs) / 1000;
+      const bitrate = lastTs ? (8 * (row.bytesSent - lastBytes) / dt / 1e6) : 0;
+      const fps = lastTs ? ((row.framesEncoded - lastFrames) / dt) : 0;
+      lastTs = row.timestamp; lastBytes = row.bytesSent; lastFrames = row.framesEncoded;
+      const c = codecs.get(row.codecId);
+      const mime = c ? c.mimeType.replace('video/','') : '?';
+      $('stat').textContent =
+        `${row.frameWidth||0}x${row.frameHeight||0}  ${fps.toFixed(0)}fps  ${bitrate.toFixed(2)} Mbps  ${mime}  ` +
+        `qp~${row.qpSum && row.framesEncoded ? (row.qpSum/row.framesEncoded).toFixed(1) : '?'}  ` +
+        `rtt ${row.roundTripTime != null ? (row.roundTripTime*1000).toFixed(0)+'ms' : '?'}`;
+    }, 1000);
+  }
+
+  $('go').onclick = start;
+  document.addEventListener('visibilitychange', () => {
+    // Some Androids stop the camera in background; nothing we can do but flag it.
+    if (document.hidden && pc) setStatus('backgrounded — video may stall');
+  });
+  persistSelect('res');
+  persistSelect('codec');
+  listCams()
+    .then(() => { persistSelect('cam'); setStatus('ready'); })
+    .catch(e => setStatus('init err: ' + e.message));
+})();
+</script>
+</body>
+</html>

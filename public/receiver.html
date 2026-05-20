@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/receiver.webmanifest">
+<link rel="icon" type="image/svg+xml" href="/icon-receiver.svg">
+<title>Reflektor — TV</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,sans-serif;overflow:hidden;cursor:none}
+  #v{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+  #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:3vw;color:rgba(255,255,255,.55);text-align:center;pointer-events:none}
+  #stat{position:fixed;bottom:1vw;right:1vw;font:1.1vw ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(0,0,0,.55);padding:.5em .7em;border-radius:.4em;opacity:.55;color:#eaeaea}
+  #stat.hidden{display:none}
+</style>
+</head>
+<body>
+<video id="v" autoplay playsinline></video>
+<div id="msg">Waiting for camera…</div>
+<div id="stat" class="hidden"></div>
+<script>
+(() => {
+  const v = document.getElementById('v');
+  const msg = document.getElementById('msg');
+  const stat = document.getElementById('stat');
+  let pc = null, ws = null;
+
+  function showMsg(text) { msg.textContent = text; msg.style.display = 'flex'; }
+  function hideMsg() { msg.style.display = 'none'; }
+
+  function connectWs() {
+    showMsg('Connecting…');
+    ws = new WebSocket(`wss://${location.host}/ws?role=receiver`);
+    ws.onopen = () => { showMsg('Waiting for camera…'); };
+    ws.onclose = () => { setTimeout(connectWs, 1000); };
+    ws.onerror = () => {};
+    ws.onmessage = async ({ data }) => {
+      const m = JSON.parse(data);
+      if (m.type === 'offer') {
+        if (pc) { try { pc.close(); } catch {} }
+        pc = new RTCPeerConnection({ iceServers: [] });
+
+        pc.ontrack = (e) => {
+          v.srcObject = e.streams[0];
+          // Minimize jitter buffer for live feel
+          try { if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } catch {}
+          try { if (e.receiver.jitterBufferTarget !== undefined) e.receiver.jitterBufferTarget = 0; } catch {}
+          v.play().catch(() => {});
+          hideMsg();
+        };
+        pc.onicecandidate = (e) => {
+          if (e.candidate && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+        };
+        pc.onconnectionstatechange = () => {
+          const s = pc.connectionState;
+          if (s === 'failed' || s === 'disconnected' || s === 'closed') showMsg('Reconnecting…');
+        };
+
+        await pc.setRemoteDescription(m);
+        const ans = await pc.createAnswer();
+        await pc.setLocalDescription(ans);
+        ws.send(JSON.stringify(ans));
+      } else if (m.type === 'ice' && pc) {
+        await pc.addIceCandidate(m.candidate).catch(() => {});
+      }
+    };
+  }
+  connectWs();
+
+  // Stats overlay (toggle with any keypress / remote OK button)
+  setInterval(async () => {
+    if (!pc || stat.classList.contains('hidden')) return;
+    const stats = await pc.getStats();
+    const codecs = new Map();
+    let row;
+    stats.forEach(r => { if (r.type === 'codec') codecs.set(r.id, r); });
+    stats.forEach(r => { if (r.type === 'inbound-rtp' && r.kind === 'video') row = r; });
+    if (!row) return;
+    const c = codecs.get(row.codecId);
+    const mime = c ? c.mimeType.replace('video/','') : '?';
+    stat.textContent =
+      `${row.frameWidth||0}x${row.frameHeight||0} @ ${row.framesPerSecond ? row.framesPerSecond.toFixed(0) : '-'}fps  ` +
+      `${mime}  dropped ${row.framesDropped||0}  jb ${(row.jitterBufferDelay && row.jitterBufferEmittedCount ? (1000*row.jitterBufferDelay/row.jitterBufferEmittedCount).toFixed(0)+'ms' : '?')}`;
+  }, 1000);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+      else document.exitFullscreen().catch(() => {});
+    } else {
+      stat.classList.toggle('hidden');
+    }
+  });
+  // Tap to toggle stats (useful via TV remote select)
+  document.addEventListener('click', () => stat.classList.toggle('hidden'));
+
+  if ('serviceWorker' in navigator) {
+    addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
+})();
+</script>
+</body>
+</html>

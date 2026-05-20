@@ -1,0 +1,15 @@
+{
+  "id": "/sender.html",
+  "name": "Reflektor Camera",
+  "short_name": "Camera",
+  "description": "Send this device's camera to a Reflektor receiver on the LAN.",
+  "start_url": "/sender.html",
+  "scope": "/",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    { "src": "/icon-sender.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -1,0 +1,12 @@
+node_modules
+certs
+.git
+.github
+.env
+.env.*
+*.log
+setup.sh
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml

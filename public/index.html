@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Reflektor</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a0a0a;color:#fff;font-family:system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden}
+  main{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2vh;padding:5vw;box-sizing:border-box;text-align:center}
+  h1{margin:0 0 1vh;font-size:clamp(28px,4vw,56px);font-weight:600;letter-spacing:-.02em}
+  p{margin:0 0 4vh;font-size:clamp(14px,1.6vw,20px);color:rgba(255,255,255,.55);max-width:36ch}
+  .row{display:flex;gap:3vh;width:100%;max-width:900px;flex-wrap:wrap;justify-content:center}
+  a.card{flex:1 1 280px;min-width:260px;min-height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1vh;padding:4vh 3vw;border:1px solid rgba(255,255,255,.15);border-radius:18px;background:rgba(255,255,255,.04);color:#fff;text-decoration:none;font-size:clamp(20px,2.4vw,32px);font-weight:500;transition:background .15s,border-color .15s,transform .15s;outline:none}
+  a.card:hover,a.card:focus{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.4)}
+  a.card:focus{transform:scale(1.02)}
+  a.card .sub{font-size:.55em;font-weight:400;color:rgba(255,255,255,.55);max-width:24ch;line-height:1.4}
+  a.card .icon{font-size:1.6em;line-height:1;margin-bottom:.5vh}
+  footer{position:fixed;bottom:1.5vh;left:0;right:0;text-align:center;color:rgba(255,255,255,.3);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Reflektor</h1>
+  <p>Pick this device's role.</p>
+  <div class="row">
+    <a class="card" href="sender.html" id="s" autofocus>
+      <span class="icon">&#x1F4F1;</span>
+      <span>Phone (Sender)</span>
+      <span class="sub">Capture this device's camera and send it to the TV.</span>
+    </a>
+    <a class="card" href="receiver.html" id="r">
+      <span class="icon">&#x1F4FA;</span>
+      <span>TV (Receiver)</span>
+      <span class="sub">Show the incoming camera stream full-screen.</span>
+    </a>
+  </div>
+</main>
+<footer>WebRTC peer-to-peer over your LAN &middot; nothing leaves the network</footer>
+<script>
+  // Light heuristic: TVs (large screens, no touch) default-focus the receiver button.
+  const isTvLike = !matchMedia('(hover: none)').matches && screen.width >= 1280;
+  if (isTvLike) document.getElementById('r').focus();
+  else document.getElementById('s').focus();
+</script>
+</body>
+</html>
