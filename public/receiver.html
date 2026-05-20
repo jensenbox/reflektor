@@ -11,7 +11,7 @@
   html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,sans-serif;overflow:hidden;cursor:none}
   #v{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
   #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:3vw;color:rgba(255,255,255,.55);text-align:center;pointer-events:none}
-  #stat{position:fixed;bottom:1vw;right:1vw;font:1.1vw ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(0,0,0,.55);padding:.5em .7em;border-radius:.4em;opacity:.55;color:#eaeaea}
+  #stat{position:fixed;bottom:1vw;right:1vw;font:1.1vw ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(0,0,0,.55);padding:.5em .7em;border-radius:.4em;opacity:.65;color:#eaeaea;white-space:pre-wrap;text-align:right}
   #stat.hidden{display:none}
 </style>
 </head>
@@ -79,9 +79,22 @@
     if (!row) return;
     const c = codecs.get(row.codecId);
     const mime = c ? c.mimeType.replace('video/','') : '?';
+    const decMs = row.totalDecodeTime && row.framesDecoded
+      ? (1000 * row.totalDecodeTime / row.framesDecoded) : null;
+    const asmMs = row.totalAssemblyTime && row.framesAssembled
+      ? (1000 * row.totalAssemblyTime / row.framesAssembled) : null;
+    const jbMs = row.jitterBufferDelay && row.jitterBufferEmittedCount
+      ? (1000 * row.jitterBufferDelay / row.jitterBufferEmittedCount) : null;
+    // Receiver-side "system latency" estimate (excludes camera capture and TV pixel-response):
+    //   decode + frame-assembly + jitter-buffer.  Add the sender-shown net~ for a rough total.
+    const localMs = (decMs || 0) + (asmMs || 0) + (jbMs || 0);
     stat.textContent =
-      `${row.frameWidth||0}x${row.frameHeight||0} @ ${row.framesPerSecond ? row.framesPerSecond.toFixed(0) : '-'}fps  ` +
-      `${mime}  dropped ${row.framesDropped||0}  jb ${(row.jitterBufferDelay && row.jitterBufferEmittedCount ? (1000*row.jitterBufferDelay/row.jitterBufferEmittedCount).toFixed(0)+'ms' : '?')}`;
+      `${row.frameWidth||0}x${row.frameHeight||0} @ ${row.framesPerSecond ? row.framesPerSecond.toFixed(0) : '-'}fps  ${mime}\n` +
+      `dropped ${row.framesDropped||0}  ` +
+      `dec ${decMs != null ? decMs.toFixed(1)+'ms' : '?'}  ` +
+      `asm ${asmMs != null ? asmMs.toFixed(1)+'ms' : '?'}  ` +
+      `jb ${jbMs != null ? jbMs.toFixed(0)+'ms' : '?'}  ` +
+      `rx~${localMs.toFixed(0)}ms`;
   }, 1000);
 
   document.addEventListener('keydown', (e) => {

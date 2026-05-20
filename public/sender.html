@@ -290,9 +290,12 @@
       if (!pc) return;
       const stats = await pc.getStats();
       const codecs = new Map();
-      let row;
+      let row, remote;
       stats.forEach(r => { if (r.type === 'codec') codecs.set(r.id, r); });
-      stats.forEach(r => { if (r.type === 'outbound-rtp' && r.kind === 'video') row = r; });
+      stats.forEach(r => {
+        if (r.type === 'outbound-rtp' && r.kind === 'video') row = r;
+        if (r.type === 'remote-inbound-rtp' && r.kind === 'video') remote = r;
+      });
       if (!row) return;
       const dt = (row.timestamp - lastTs) / 1000;
       const bitrate = lastTs ? (8 * (row.bytesSent - lastBytes) / dt / 1e6) : 0;
@@ -300,10 +303,16 @@
       lastTs = row.timestamp; lastBytes = row.bytesSent; lastFrames = row.framesEncoded;
       const c = codecs.get(row.codecId);
       const mime = c ? c.mimeType.replace('video/','') : '?';
+      const encMs = row.totalEncodeTime && row.framesEncoded
+        ? (1000 * row.totalEncodeTime / row.framesEncoded) : null;
+      const rttMs = remote?.roundTripTime != null ? remote.roundTripTime * 1000
+                  : (row.roundTripTime != null ? row.roundTripTime * 1000 : null);
       $('stat').textContent =
-        `${row.frameWidth||0}x${row.frameHeight||0}  ${fps.toFixed(0)}fps  ${bitrate.toFixed(2)} Mbps  ${mime}  ` +
-        `qp~${row.qpSum && row.framesEncoded ? (row.qpSum/row.framesEncoded).toFixed(1) : '?'}  ` +
-        `rtt ${row.roundTripTime != null ? (row.roundTripTime*1000).toFixed(0)+'ms' : '?'}`;
+        `${row.frameWidth||0}x${row.frameHeight||0}  ${fps.toFixed(0)}fps  ${bitrate.toFixed(2)} Mbps  ${mime}\n` +
+        `enc ${encMs != null ? encMs.toFixed(1)+'ms' : '?'}  ` +
+        `rtt ${rttMs != null ? rttMs.toFixed(0)+'ms' : '?'}  ` +
+        `net~${rttMs != null ? (rttMs/2).toFixed(0)+'ms' : '?'}  ` +
+        `qp~${row.qpSum && row.framesEncoded ? (row.qpSum/row.framesEncoded).toFixed(1) : '?'}`;
     }, 1000);
   }
 
