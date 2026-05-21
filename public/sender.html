@@ -68,6 +68,19 @@
   // Server identity — when it changes across reconnects, the server was redeployed → reload.
   let serverId = null;
 
+  // Mini session-storage helper used to auto-resume streaming/probe/blank across reloads
+  // (including the auto-reload that fires on deploy). sessionStorage clears with the tab,
+  // so we don't surprise users by auto-starting weeks-later visits.
+  const SS = {
+    get: (k, fb = null) => {
+      try {
+        const v = sessionStorage.getItem('reflektor:' + k);
+        return v === null ? fb : JSON.parse(v);
+      } catch { return fb; }
+    },
+    set: (k, v) => { try { sessionStorage.setItem('reflektor:' + k, JSON.stringify(v)); } catch {} },
+  };
+
   async function acquireWake() {
     try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
   }
@@ -82,8 +95,8 @@
   function setBlanked(on) {
     document.body.classList.toggle('blanked', on);
   }
-  $('blank').onclick = (e) => { e.stopPropagation(); setBlanked(true); };
-  $('tap').addEventListener('click', () => setBlanked(false));
+  $('blank').onclick = (e) => { e.stopPropagation(); setBlanked(true); SS.set('blank', true); };
+  $('tap').addEventListener('click', () => { setBlanked(false); SS.set('blank', false); });
 
   // Orientation lock (must be triggered by a tap, in PWA or fullscreen).
   let orientationLocked = false;
@@ -228,6 +241,7 @@
     $('blank').hidden = false;
     $('lock').hidden = false;
     $('probe').hidden = false;
+    SS.set('streaming', true);
   }
 
   async function onWsMessage({ data }) {
@@ -337,14 +351,19 @@
     }
   }
 
-  $('probe').onclick = async () => {
-    probeActive = !probeActive;
-    $('probe').classList.toggle('stop', probeActive);
-    $('probe').textContent = probeActive ? 'Probe (on)' : 'Probe';
-    if (probeActive) await startProbe(); else await stopProbe();
-  };
+  async function setProbe(on) {
+    probeActive = on;
+    SS.set('probe', on);
+    $('probe').classList.toggle('stop', on);
+    $('probe').textContent = on ? 'Probe (on)' : 'Probe';
+    if (on) await startProbe(); else await stopProbe();
+  }
+  $('probe').onclick = () => setProbe(!probeActive);
 
   function stop() {
+    SS.set('streaming', false);
+    SS.set('probe', false);
+    SS.set('blank', false);
     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
     if (pc)     { try { pc.close(); } catch {} pc = null; }
     if (ws)     { try { ws.close(); } catch {} ws = null; }
@@ -410,7 +429,21 @@
   persistSelect('res');
   persistSelect('codec');
   listCams()
-    .then(() => { persistSelect('cam'); setStatus('ready'); })
+    .then(async () => {
+      persistSelect('cam');
+      setStatus('ready');
+      // Auto-resume if this tab was streaming before the reload (manual or auto-deploy).
+      if (SS.get('streaming')) {
+        try {
+          await start();
+          if (SS.get('probe')) await setProbe(true);
+          if (SS.get('blank')) setBlanked(true);
+        } catch (e) {
+          console.warn('[reflektor] auto-resume failed:', e);
+          SS.set('streaming', false);
+        }
+      }
+    })
     .catch(e => setStatus('init err: ' + e.message));
 })();
 </script>
