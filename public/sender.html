@@ -191,8 +191,9 @@
   async function getSourceStream() {
     const { w, h, fps } = parseRes($('res').value);
     if (source === 'screen') {
+      // getDisplayMedia rejects `min` constraints — use ideal-only.
       return await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps, min: Math.min(30, fps) } },
+        video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } },
         audio: audioEnabled,
       });
     }
