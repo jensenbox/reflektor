@@ -29,6 +29,8 @@
   const stat = document.getElementById('stat');
   const probeEl = document.getElementById('probe');
   let pc = null, ws = null;
+  // Server identity — reload if it changes across reconnects (auto-update on deploy).
+  let serverId = null;
 
   // Latency probe state
   let probeChannel = null, probeCanvas = null, probeCtx = null;
@@ -47,6 +49,15 @@
     ws.onerror = () => {};
     ws.onmessage = async ({ data }) => {
       const m = JSON.parse(data);
+      if (m.type === 'hello') {
+        if (serverId && serverId !== m.serverId) {
+          console.log('[reflektor] server restarted, reloading');
+          location.reload();
+          return;
+        }
+        serverId = m.serverId;
+        return;
+      }
       if (m.type === 'offer') {
         if (pc) { try { pc.close(); } catch {} }
         stopProbe();

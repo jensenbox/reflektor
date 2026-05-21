@@ -5,7 +5,11 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
+
+// Regenerated on every container start. Clients use it to auto-reload after deploys.
+const SERVER_ID = randomUUID();
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT      = parseInt(process.env.PORT      ?? '8443', 10);
@@ -68,6 +72,10 @@ wss.on('connection', (ws, req) => {
   peers[role] = ws;
   console.log(`[ws] ${role} connected (${req.socket.remoteAddress})`);
 
+  // Tell the client which server instance it just connected to. If they see
+  // a different id on a later reconnect, they reload (auto-update).
+  try { ws.send(JSON.stringify({ type: 'hello', serverId: SERVER_ID })); } catch {}
+
   // Whenever both peers are present (initial connect OR receiver reconnect),
   // nudge the sender to (re)negotiate. The sender's existing pc, if any, is
   // discarded and a fresh offer is sent.
@@ -110,7 +118,8 @@ const httpRedirector = createHttpServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   httpRedirector.listen(HTTP_PORT, '0.0.0.0', () => {
-    console.log(`\nReflektor up — HTTPS :${PORT}, HTTP :${HTTP_PORT} (redirects to HTTPS)\n`);
+    console.log(`\nReflektor up — HTTPS :${PORT}, HTTP :${HTTP_PORT} (redirects to HTTPS)`);
+    console.log(`server id ${SERVER_ID}\n`);
     for (const ip of lanAddrs()) {
       console.log(`  http://${ip}:${HTTP_PORT}/   →  https://${ip}:${PORT}/`);
     }

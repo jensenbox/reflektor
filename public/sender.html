@@ -65,6 +65,8 @@
   // Latency probe state
   let probeActive = false, probeCanvas = null, probeCtx = null, probeStream = null;
   let probeRaf = null, originalTrack = null, probeChannel = null;
+  // Server identity — when it changes across reconnects, the server was redeployed → reload.
+  let serverId = null;
 
   async function acquireWake() {
     try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
@@ -231,7 +233,14 @@
   async function onWsMessage({ data }) {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
-    if (msg.type === 'negotiate') {
+    if (msg.type === 'hello') {
+      if (serverId && serverId !== msg.serverId) {
+        console.log('[reflektor] server restarted, reloading');
+        location.reload();
+        return;
+      }
+      serverId = msg.serverId;
+    } else if (msg.type === 'negotiate') {
       await negotiate();
     } else if (msg.type === 'answer' && pc) {
       await pc.setRemoteDescription(msg).catch((e) => console.warn('setRemoteDescription', e));
