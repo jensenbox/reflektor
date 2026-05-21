@@ -458,6 +458,12 @@
   // ---- Init ----
   $('go').onclick = () => start('camera');
   $('screen').onclick = () => start('screen');
+  // Most phone browsers don't expose getDisplayMedia. Surface that up front
+  // instead of throwing a cryptic error when the user taps Screen.
+  if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+    $('screen').disabled = true;
+    $('screen').title = 'Screen capture not supported on this browser';
+  }
   setAudio(LS.get('audio', false));
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && pcs.size > 0) setStatus('backgrounded — video may stall');
