@@ -18,7 +18,7 @@
 </style>
 </head>
 <body>
-<video id="v" autoplay playsinline></video>
+<video id="v" autoplay muted playsinline></video>
 <div id="msg">Waiting for camera…</div>
 <div id="stat" class="hidden"></div>
 <div id="probe" class="hidden">latency — ms</div>
@@ -61,7 +61,10 @@
           // Minimize jitter buffer for live feel
           try { if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } catch {}
           try { if (e.receiver.jitterBufferTarget !== undefined) e.receiver.jitterBufferTarget = 0; } catch {}
-          v.play().catch(() => {});
+          v.play().catch((err) => {
+            console.warn('autoplay blocked, will resume on first interaction:', err);
+            showMsg('Tap to start');
+          });
           hideMsg();
         };
         pc.onicecandidate = (e) => {
@@ -121,7 +124,11 @@
     }
   });
   // Tap to toggle stats (useful via TV remote select)
-  document.addEventListener('click', () => stat.classList.toggle('hidden'));
+  // Also kicks autoplay-blocked playback awake on the first interaction.
+  document.addEventListener('click', () => {
+    stat.classList.toggle('hidden');
+    if (v.paused && v.srcObject) v.play().then(hideMsg).catch(() => {});
+  });
 
   // ----- Latency probe: decode 32-bit timestamp barcode + ping/pong clock sync -----
   function startProbe(channel) {
