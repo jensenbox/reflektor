@@ -1,0 +1,42 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What's broken
+      description: A concise description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open https://reflektor.local:8443/sender.html on the phone
+        2. Tap Start
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Reflektor version / image digest
+      placeholder: "ghcr.io/jensenbox/reflektor:latest @sha256:..."
+  - type: input
+    id: env
+    attributes:
+      label: Sender + receiver browser & device
+      placeholder: "Pixel 8 Chrome 130 → Hisense Android 12 (Hi Browser)"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log + browser console output
+      render: shell

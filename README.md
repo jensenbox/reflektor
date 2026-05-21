@@ -1,5 +1,11 @@
 # Reflektor
 
+[![build](https://github.com/jensenbox/reflektor/actions/workflows/docker.yml/badge.svg)](https://github.com/jensenbox/reflektor/actions/workflows/docker.yml)
+[![codeql](https://github.com/jensenbox/reflektor/actions/workflows/codeql.yml/badge.svg)](https://github.com/jensenbox/reflektor/actions/workflows/codeql.yml)
+[![release](https://img.shields.io/github/v/release/jensenbox/reflektor?display_name=tag&sort=semver)](https://github.com/jensenbox/reflektor/releases)
+[![license](https://img.shields.io/github/license/jensenbox/reflektor)](LICENSE)
+[![image](https://img.shields.io/badge/image-ghcr.io%2Fjensenbox%2Freflektor-blue)](https://github.com/jensenbox/reflektor/pkgs/container/reflektor)
+
 Ultra-low-latency live view of a phone's camera (or any browser's screen) on a TV/screen, over your LAN. WebRTC peer-to-peer; the server only relays signaling and never sees media. ~80–200 ms glass-to-glass on a healthy 5 GHz LAN; 1080p60 at up to 20 Mbps.
 
 No Google Cast SDK, no public hosting, no STUN/TURN — `iceServers: []` so the connection can only resolve over LAN candidates.

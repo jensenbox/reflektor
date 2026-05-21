@@ -3,6 +3,25 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Ultra-low-latency LAN WebRTC streaming from a phone camera (or browser screen) to a TV. ~150 ms glass-to-glass, no STUN/TURN, media never leaves the network.",
+  "homepage": "https://github.com/jensenbox/reflektor",
+  "bugs": "https://github.com/jensenbox/reflektor/issues",
+  "license": "MIT",
+  "author": "Christian Jensen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jensenbox/reflektor.git"
+  },
+  "keywords": [
+    "webrtc",
+    "lan",
+    "streaming",
+    "pwa",
+    "camera",
+    "low-latency",
+    "self-hosted",
+    "chromecast"
+  ],
   "scripts": {
     "start": "node server.mjs"
   },
