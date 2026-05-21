@@ -65,7 +65,13 @@ State (streaming, probe-on, screen-off) is restored after auto-reloads within th
 
 ## mDNS (`reflektor.local`)
 
-The container ships with `avahi-publish-address`. The compose file mounts `/var/run/avahi-daemon/socket` from the host so the container can publish via the host's already-running `avahi-daemon`. If the host doesn't run avahi, the publish step no-ops silently and you reach the box by IP only.
+One-time host setup (the Alpine avahi client inside the container is protocol-incompatible with the host's avahi-daemon, so we publish host-side instead):
+
+```bash
+sudo ./scripts/install-host-mdns.sh
+```
+
+That installs `avahi-daemon` + `avahi-utils` if missing, drops a `reflektor-mdns.service` unit that runs `avahi-publish-address`, and starts it. After this, `reflektor.local` resolves to your host's IP from every device on the LAN. If you skip this, you reach the box by IP — everything else still works.
 
 ## PIN protection
 

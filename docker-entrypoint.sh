@@ -23,14 +23,9 @@ else
   echo "[reflektor] Using existing cert in $CERT_DIR"
 fi
 
-# mDNS: publish $MDNS_HOSTNAME → $LAN_IP via the host's avahi-daemon
-# (requires /var/run/avahi-daemon/socket bind-mounted from host). If avahi
-# isn't available, skip silently — IP-based access still works.
-if [ -S /var/run/avahi-daemon/socket ] && command -v avahi-publish-address >/dev/null; then
-  echo "[reflektor] publishing $MDNS_HOSTNAME → ${LAN_IP:-?} via mDNS"
-  avahi-publish-address -R "$MDNS_HOSTNAME" "$LAN_IP" >/dev/null 2>&1 &
-else
-  echo "[reflektor] mDNS publish skipped (no avahi socket); reach via IP only"
-fi
+# Note: mDNS publishing of $MDNS_HOSTNAME is intentionally done host-side via
+# a small systemd service (see README) rather than from inside the container.
+# Alpine's avahi client and the host's Ubuntu avahi-daemon use incompatible
+# protocol versions, so socket-mount approaches die with "Daemon not running".
 
 exec "$@"

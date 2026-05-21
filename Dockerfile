@@ -4,8 +4,7 @@ WORKDIR /app
 
 # openssl: cert generation in entrypoint
 # bash: entrypoint script shebang
-# avahi-tools: publish reflektor.local via the host's avahi-daemon (socket-mounted)
-RUN apk add --no-cache openssl bash avahi-tools
+RUN apk add --no-cache openssl bash
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
