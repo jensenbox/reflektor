@@ -1,6 +1,6 @@
 {
   "name": "reflektor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Ultra-low-latency LAN WebRTC streaming from a phone camera (or browser screen) to a TV. ~150 ms glass-to-glass, no STUN/TURN, media never leaves the network.",

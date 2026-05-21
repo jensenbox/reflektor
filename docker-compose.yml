@@ -5,7 +5,8 @@ services:
     restart: unless-stopped
     environment:
       # Required: LAN IP this host serves on. Used for cert SAN + mDNS A-record.
-      LAN_IP: ${LAN_IP:-192.168.16.10}
+      # Set in .env (see .env.example). Compose errors out if unset.
+      LAN_IP: ${LAN_IP:?LAN_IP is required — set it in .env, e.g. LAN_IP=192.168.1.10}
       # Optional: mDNS hostname to publish (defaults to reflektor.local).
       MDNS_HOSTNAME: ${MDNS_HOSTNAME:-reflektor.local}
       # Optional: enable PIN gate (HTTP Basic auth). Leave empty for no auth.

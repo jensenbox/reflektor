@@ -16,7 +16,7 @@ Pre-built multi-arch image at `ghcr.io/jensenbox/reflektor:latest`.
 
 ```bash
 curl -O https://raw.githubusercontent.com/jensenbox/reflektor/main/docker-compose.yml
-echo "LAN_IP=192.168.16.10" > .env       # your host's LAN IP
+echo "LAN_IP=$(hostname -I | awk '{print $1}')" > .env   # or set it manually, e.g. 192.168.1.10
 docker compose up -d
 ```
 

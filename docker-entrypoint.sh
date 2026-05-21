@@ -9,7 +9,7 @@ mkdir -p "$CERT_DIR"
 
 if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then
   if [ -z "${LAN_IP:-}" ]; then
-    echo "LAN_IP environment variable must be set (e.g. LAN_IP=192.168.16.10)" >&2
+    echo "LAN_IP environment variable must be set (e.g. LAN_IP=192.168.1.10)" >&2
     exit 1
   fi
   echo "[reflektor] Generating self-signed cert for $LAN_IP / $MDNS_HOSTNAME (10y validity)..."

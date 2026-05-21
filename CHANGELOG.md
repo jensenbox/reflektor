@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); thi
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-20
+
+### Fixed
+- Removed maintainer's LAN IP as the default `LAN_IP` in `docker-compose.yml`. Compose now requires it explicitly via `.env` and errors out with a clear message if missing — previously a stranger cloning the repo would silently get a cert pinned to a foreign IP.
+- README quickstart auto-detects the host's LAN IP via `hostname -I` instead of hardcoding an example.
+- Example IPs in `.env.example` and the entrypoint error message changed from a real LAN address to the generic `192.168.1.10`.
+
 ## [0.1.0] — 2026-05-20
 
 Initial public release.
@@ -29,5 +36,6 @@ Initial public release.
 - Docker image `ghcr.io/jensenbox/reflektor:latest`, multi-arch (`linux/amd64`, `linux/arm64`), with `HEALTHCHECK` and `/healthz` JSON endpoint.
 - GitHub Actions workflow auto-publishes images on every `main` push.
 
-[Unreleased]: https://github.com/jensenbox/reflektor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jensenbox/reflektor/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/jensenbox/reflektor/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jensenbox/reflektor/releases/tag/v0.1.0
