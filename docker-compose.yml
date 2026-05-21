@@ -20,4 +20,6 @@ services:
       # Mounted-in host avahi-daemon socket so the container can publish
       # reflektor.local via the host's mDNS responder. Optional: if absent,
       # mDNS is skipped and you reach the box by IP only.
-      - /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket
+      # NOTE: /run (not /var/run) is the canonical path — /var/run is a
+      # symlink on most distros and Docker won't follow symlinks for bind sources.
+      - /run/avahi-daemon/socket:/var/run/avahi-daemon/socket
