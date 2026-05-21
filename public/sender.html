@@ -50,6 +50,7 @@
   <button id="go" class="primary">Start</button>
   <button id="blank" hidden title="Hide preview to save OLED power">Screen off</button>
   <button id="lock" hidden title="Lock current screen orientation">Lock</button>
+  <button id="probe" hidden title="Embed timestamp barcode in stream for end-to-end latency measurement">Probe</button>
   <button id="install" hidden title="Install Reflektor as an app">Install</button>
 </div>
 <div id="stat"></div>
@@ -61,6 +62,9 @@
   const setDot = (cls) => { $('dot').className = ''; if (cls) $('dot').classList.add(cls); };
 
   let pc = null, ws = null, sender = null, stream = null, statsTimer = null, wakeLock = null;
+  // Latency probe state
+  let probeActive = false, probeCanvas = null, probeCtx = null, probeStream = null;
+  let probeRaf = null, originalTrack = null, probeChannel = null;
 
   async function acquireWake() {
     try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
@@ -221,6 +225,7 @@
     $('go').onclick = stop;
     $('blank').hidden = false;
     $('lock').hidden = false;
+    $('probe').hidden = false;
   }
 
   async function onWsMessage({ data }) {
@@ -237,7 +242,7 @@
 
   async function negotiate() {
     if (!stream || !ws || ws.readyState !== 1) return;
-    if (pc) { try { pc.close(); } catch {} pc = null; sender = null; }
+    if (pc) { try { pc.close(); } catch {} pc = null; sender = null; probeChannel = null; }
     setStatus('negotiating…');
     setDot('warn');
 
@@ -247,12 +252,19 @@
     const chosen = preferCodec(tx, $('codec').value);
     sender = tx.sender;
 
+    // Data channel for clock sync (receiver pings, we pong).
+    probeChannel = pc.createDataChannel('probe', { ordered: false, maxRetransmits: 0 });
+    probeChannel.onmessage = onProbeMessage;
+
     pc.onicecandidate = (e) => {
       if (e.candidate && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
     };
     pc.onconnectionstatechange = () => {
       setStatus('webrtc: ' + pc.connectionState);
-      if (pc.connectionState === 'connected') { setDot('on'); tuneSender(); }
+      if (pc.connectionState === 'connected') {
+        setDot('on'); tuneSender();
+        if (probeActive) startProbe();  // re-arm composite after fresh pc
+      }
       else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setDot('warn');
     };
 
@@ -261,6 +273,67 @@
     ws.send(JSON.stringify(offer));
     setStatus('offer sent' + (chosen ? ' (' + chosen + ')' : ''));
   }
+
+  // ----- Latency probe: composite (camera + 32-bit timestamp barcode) replaces the raw track -----
+  function drawBarcode(ctx, w, h, tMs) {
+    const bits = 32;
+    const colW = w / bits;
+    const rowH = Math.max(28, Math.floor(h * 0.05));
+    const t = (Math.floor(tMs) >>> 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, rowH);
+    ctx.fillStyle = '#fff';
+    for (let i = 0; i < bits; i++) {
+      if ((t >>> i) & 1) ctx.fillRect(Math.floor(i * colW), 0, Math.ceil(colW) + 1, rowH);
+    }
+  }
+
+  async function startProbe() {
+    if (!stream || !sender) return;
+    const { w, h } = parseRes($('res').value);
+    if (!probeCanvas) {
+      probeCanvas = document.createElement('canvas');
+      probeCtx = probeCanvas.getContext('2d', { alpha: false });
+    }
+    probeCanvas.width = w; probeCanvas.height = h;
+    const v = $('preview');
+    const draw = () => {
+      if (!probeStream) return;
+      if (v.videoWidth) probeCtx.drawImage(v, 0, 0, w, h);
+      else { probeCtx.fillStyle = '#111'; probeCtx.fillRect(0, 0, w, h); }
+      drawBarcode(probeCtx, w, h, performance.now());
+      probeRaf = requestAnimationFrame(draw);
+    };
+    probeStream = probeCanvas.captureStream(60);
+    const newTrack = probeStream.getVideoTracks()[0];
+    if (!originalTrack) originalTrack = sender.track;
+    try { await sender.replaceTrack(newTrack); } catch (e) { console.warn('replaceTrack', e); }
+    probeRaf = requestAnimationFrame(draw);
+  }
+
+  async function stopProbe() {
+    if (probeRaf) { cancelAnimationFrame(probeRaf); probeRaf = null; }
+    if (probeStream) { probeStream.getTracks().forEach(t => t.stop()); probeStream = null; }
+    if (sender && originalTrack) {
+      try { await sender.replaceTrack(originalTrack); } catch {}
+    }
+    originalTrack = null;
+  }
+
+  function onProbeMessage(ev) {
+    let m;
+    try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'ping' && probeChannel?.readyState === 'open') {
+      probeChannel.send(JSON.stringify({ type: 'pong', t1: m.t1, t2: performance.now() }));
+    }
+  }
+
+  $('probe').onclick = async () => {
+    probeActive = !probeActive;
+    $('probe').classList.toggle('stop', probeActive);
+    $('probe').textContent = probeActive ? 'Probe (on)' : 'Probe';
+    if (probeActive) await startProbe(); else await stopProbe();
+  };
 
   function stop() {
     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
@@ -281,6 +354,10 @@
     if (orientationLocked) { try { screen.orientation.unlock(); } catch {} orientationLocked = false; }
     $('lock').textContent = 'Lock';
     $('lock').hidden = true;
+    if (probeActive) { stopProbe(); probeActive = false; }
+    $('probe').textContent = 'Probe';
+    $('probe').classList.remove('stop');
+    $('probe').hidden = true;
   }
 
   function startStats() {

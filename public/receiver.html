@@ -13,18 +13,28 @@
   #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:3vw;color:rgba(255,255,255,.55);text-align:center;pointer-events:none}
   #stat{position:fixed;bottom:1vw;right:1vw;font:1.1vw ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(0,0,0,.55);padding:.5em .7em;border-radius:.4em;opacity:.65;color:#eaeaea;white-space:pre-wrap;text-align:right}
   #stat.hidden{display:none}
+  #probe{position:fixed;top:1vw;left:1vw;font:bold 2.4vw ui-monospace,SFMono-Regular,Menlo,monospace;color:#4eff7a;background:rgba(0,0,0,.55);padding:.35em .7em;border-radius:.4em;z-index:5;letter-spacing:.02em}
+  #probe.hidden{display:none}
 </style>
 </head>
 <body>
 <video id="v" autoplay playsinline></video>
 <div id="msg">Waiting for camera…</div>
 <div id="stat" class="hidden"></div>
+<div id="probe" class="hidden">latency — ms</div>
 <script>
 (() => {
   const v = document.getElementById('v');
   const msg = document.getElementById('msg');
   const stat = document.getElementById('stat');
+  const probeEl = document.getElementById('probe');
   let pc = null, ws = null;
+
+  // Latency probe state
+  let probeChannel = null, probeCanvas = null, probeCtx = null;
+  let probeDecodeTimer = null, probePingTimer = null;
+  let clockOffsetSamples = [], clockOffset = 0;     // receiver_time - sender_time
+  let latencySamples = [], lastValidAt = 0;
 
   function showMsg(text) { msg.textContent = text; msg.style.display = 'flex'; }
   function hideMsg() { msg.style.display = 'none'; }
@@ -39,7 +49,12 @@
       const m = JSON.parse(data);
       if (m.type === 'offer') {
         if (pc) { try { pc.close(); } catch {} }
+        stopProbe();
         pc = new RTCPeerConnection({ iceServers: [] });
+
+        pc.ondatachannel = (e) => {
+          if (e.channel.label === 'probe') startProbe(e.channel);
+        };
 
         pc.ontrack = (e) => {
           v.srcObject = e.streams[0];
@@ -107,6 +122,86 @@
   });
   // Tap to toggle stats (useful via TV remote select)
   document.addEventListener('click', () => stat.classList.toggle('hidden'));
+
+  // ----- Latency probe: decode 32-bit timestamp barcode + ping/pong clock sync -----
+  function startProbe(channel) {
+    probeChannel = channel;
+    probeEl.textContent = 'latency — ms';
+    probeEl.classList.remove('hidden');
+    clockOffsetSamples = []; latencySamples = []; lastValidAt = 0;
+    probeChannel.onopen = () => {
+      probePingTimer = setInterval(sendPing, 500);
+      sendPing();
+    };
+    probeChannel.onmessage = onProbeMessage;
+    probeChannel.onclose = stopProbe;
+    if (!probeCanvas) {
+      probeCanvas = document.createElement('canvas');
+      probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true, alpha: false });
+    }
+    if (!probeDecodeTimer) probeDecodeTimer = setInterval(decodeFrame, 100);  // 10 Hz
+  }
+
+  function stopProbe() {
+    if (probePingTimer) { clearInterval(probePingTimer); probePingTimer = null; }
+    if (probeDecodeTimer) { clearInterval(probeDecodeTimer); probeDecodeTimer = null; }
+    if (probeChannel) { try { probeChannel.close(); } catch {} probeChannel = null; }
+    probeEl.classList.add('hidden');
+  }
+
+  function sendPing() {
+    if (probeChannel?.readyState === 'open') {
+      probeChannel.send(JSON.stringify({ type: 'ping', t1: performance.now() }));
+    }
+  }
+
+  function onProbeMessage(ev) {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type !== 'pong') return;
+    const t3 = performance.now();
+    const rtt = t3 - m.t1;
+    const oneWay = rtt / 2;
+    // perf_R = perf_S + offset ; at pong-recv: perf_S ≈ m.t2 + oneWay
+    const offset = t3 - (m.t2 + oneWay);
+    clockOffsetSamples.push(offset);
+    if (clockOffsetSamples.length > 10) clockOffsetSamples.shift();
+    const sorted = [...clockOffsetSamples].sort((a, b) => a - b);
+    clockOffset = sorted[Math.floor(sorted.length / 2)];
+  }
+
+  function decodeFrame() {
+    if (!v.videoWidth || !v.videoHeight) return;
+    const w = v.videoWidth, h = v.videoHeight;
+    const rowH = Math.max(28, Math.floor(h * 0.05));
+    probeCanvas.width = w; probeCanvas.height = rowH;
+    probeCtx.drawImage(v, 0, 0, w, rowH, 0, 0, w, rowH);
+    const data = probeCtx.getImageData(0, 0, w, rowH).data;
+    const bits = 32;
+    const colW = w / bits;
+    const sampleY = Math.floor(rowH / 2);
+    let value = 0;
+    for (let i = 0; i < bits; i++) {
+      const sampleX = Math.floor(colW * (i + 0.5));
+      const idx = (sampleY * w + sampleX) * 4;
+      const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+      if (lum > 128) value |= (1 << i);
+    }
+    // value is the sender's performance.now() in ms at encode time (unsigned 32-bit)
+    const sentMs = (value >>> 0);
+    // Convert sender timestamp to receiver timeline.
+    const receivedSenderTime = sentMs + clockOffset;
+    const latency = performance.now() - receivedSenderTime;
+    if (latency > -50 && latency < 2000 && clockOffsetSamples.length >= 3) {
+      latencySamples.push(latency);
+      if (latencySamples.length > 10) latencySamples.shift();
+      const sorted = [...latencySamples].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      probeEl.textContent = `latency ${median.toFixed(0)} ms`;
+      lastValidAt = performance.now();
+    } else if (performance.now() - lastValidAt > 2000) {
+      probeEl.textContent = 'latency — ms';
+    }
+  }
 
   if ('serviceWorker' in navigator) {
     addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
