@@ -2,7 +2,10 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl bash
+# openssl: cert generation in entrypoint
+# bash: entrypoint script shebang
+# avahi-tools: publish reflektor.local via the host's avahi-daemon (socket-mounted)
+RUN apk add --no-cache openssl bash avahi-tools
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
@@ -13,6 +16,10 @@ COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 8443 8080
+
+# Self-check via /healthz (no auth required). wget is in busybox base.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- --no-check-certificate "https://localhost:${PORT:-8443}/healthz" >/dev/null || exit 1
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "server.mjs"]

@@ -15,6 +15,8 @@
   #stat.hidden{display:none}
   #probe{position:fixed;top:1vw;left:1vw;font:bold 2.4vw ui-monospace,SFMono-Regular,Menlo,monospace;color:#4eff7a;background:rgba(0,0,0,.55);padding:.35em .7em;border-radius:.4em;z-index:5;letter-spacing:.02em}
   #probe.hidden{display:none}
+  #aud{position:fixed;bottom:5vh;left:50%;transform:translateX(-50%);font:bold 2vw ui-monospace,sans-serif;color:#fff;background:rgba(0,0,0,.7);padding:.5em 1em;border-radius:.5em;z-index:6;cursor:pointer}
+  #aud.hidden{display:none}
 </style>
 </head>
 <body>
@@ -22,24 +24,28 @@
 <div id="msg">Waiting for camera…</div>
 <div id="stat" class="hidden"></div>
 <div id="probe" class="hidden">latency — ms</div>
+<div id="aud" class="hidden">Tap for sound</div>
 <script>
 (() => {
   const v = document.getElementById('v');
   const msg = document.getElementById('msg');
   const stat = document.getElementById('stat');
   const probeEl = document.getElementById('probe');
+  const audEl = document.getElementById('aud');
   let pc = null, ws = null;
-  // Server identity — reload if it changes across reconnects (auto-update on deploy).
-  let serverId = null;
+  let serverId = null, myPeerId = null;
+  let audioPromptShown = false;
 
   // Latency probe state
   let probeChannel = null, probeCanvas = null, probeCtx = null;
   let probeDecodeTimer = null, probePingTimer = null;
-  let clockOffsetSamples = [], clockOffset = 0;     // receiver_time - sender_time
+  let clockOffsetSamples = [], clockOffset = 0;
   let latencySamples = [], lastValidAt = 0;
 
   function showMsg(text) { msg.textContent = text; msg.style.display = 'flex'; }
   function hideMsg() { msg.style.display = 'none'; }
+  function showAudioPrompt() { audioPromptShown = true; audEl.classList.remove('hidden'); }
+  function hideAudioPrompt() { audioPromptShown = false; audEl.classList.add('hidden'); }
 
   function connectWs() {
     showMsg('Connecting…');
@@ -56,11 +62,13 @@
           return;
         }
         serverId = m.serverId;
+        myPeerId = m.peerId;
         return;
       }
       if (m.type === 'offer') {
         if (pc) { try { pc.close(); } catch {} }
         stopProbe();
+        hideAudioPrompt();
         pc = new RTCPeerConnection({ iceServers: [] });
 
         pc.ondatachannel = (e) => {
@@ -69,7 +77,6 @@
 
         pc.ontrack = (e) => {
           v.srcObject = e.streams[0];
-          // Minimize jitter buffer for live feel
           try { if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } catch {}
           try { if (e.receiver.jitterBufferTarget !== undefined) e.receiver.jitterBufferTarget = 0; } catch {}
           v.play().catch((err) => {
@@ -77,6 +84,9 @@
             showMsg('Tap to start');
           });
           hideMsg();
+          // Surface audio-unmute prompt only if the incoming stream actually carries audio.
+          const at = e.streams[0]?.getAudioTracks?.() ?? [];
+          if (at.length > 0 && v.muted) showAudioPrompt();
         };
         pc.onicecandidate = (e) => {
           if (e.candidate && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
@@ -86,10 +96,10 @@
           if (s === 'failed' || s === 'disconnected' || s === 'closed') showMsg('Reconnecting…');
         };
 
-        await pc.setRemoteDescription(m);
+        await pc.setRemoteDescription({ type: 'offer', sdp: m.sdp });
         const ans = await pc.createAnswer();
         await pc.setLocalDescription(ans);
-        ws.send(JSON.stringify(ans));
+        ws.send(JSON.stringify({ type: 'answer', sdp: ans.sdp }));
       } else if (m.type === 'ice' && pc) {
         await pc.addIceCandidate(m.candidate).catch(() => {});
       }
@@ -97,7 +107,6 @@
   }
   connectWs();
 
-  // Stats overlay (toggle with any keypress / remote OK button)
   setInterval(async () => {
     if (!pc || stat.classList.contains('hidden')) return;
     const stats = await pc.getStats();
@@ -108,14 +117,9 @@
     if (!row) return;
     const c = codecs.get(row.codecId);
     const mime = c ? c.mimeType.replace('video/','') : '?';
-    const decMs = row.totalDecodeTime && row.framesDecoded
-      ? (1000 * row.totalDecodeTime / row.framesDecoded) : null;
-    const asmMs = row.totalAssemblyTime && row.framesAssembled
-      ? (1000 * row.totalAssemblyTime / row.framesAssembled) : null;
-    const jbMs = row.jitterBufferDelay && row.jitterBufferEmittedCount
-      ? (1000 * row.jitterBufferDelay / row.jitterBufferEmittedCount) : null;
-    // Receiver-side "system latency" estimate (excludes camera capture and TV pixel-response):
-    //   decode + frame-assembly + jitter-buffer.  Add the sender-shown net~ for a rough total.
+    const decMs = row.totalDecodeTime && row.framesDecoded ? (1000 * row.totalDecodeTime / row.framesDecoded) : null;
+    const asmMs = row.totalAssemblyTime && row.framesAssembled ? (1000 * row.totalAssemblyTime / row.framesAssembled) : null;
+    const jbMs = row.jitterBufferDelay && row.jitterBufferEmittedCount ? (1000 * row.jitterBufferDelay / row.jitterBufferEmittedCount) : null;
     const localMs = (decMs || 0) + (asmMs || 0) + (jbMs || 0);
     stat.textContent =
       `${row.frameWidth||0}x${row.frameHeight||0} @ ${row.framesPerSecond ? row.framesPerSecond.toFixed(0) : '-'}fps  ${mime}\n` +
@@ -134,17 +138,21 @@
       stat.classList.toggle('hidden');
     }
   });
-  // Tap to toggle stats (useful via TV remote select)
-  // Also kicks autoplay-blocked playback awake on the first interaction.
+  // Tap: priority is (1) unmute audio if prompted, (2) resume autoplay if paused, (3) toggle stats
   document.addEventListener('click', () => {
+    if (audioPromptShown) {
+      v.muted = false;
+      v.play().catch(() => {});
+      hideAudioPrompt();
+      return;
+    }
+    if (v.paused && v.srcObject) { v.play().then(hideMsg).catch(() => {}); return; }
     stat.classList.toggle('hidden');
-    if (v.paused && v.srcObject) v.play().then(hideMsg).catch(() => {});
   });
 
   // ----- Latency probe: decode 32-bit timestamp barcode + ping/pong clock sync -----
   function startProbe(channel) {
     probeChannel = channel;
-    // Keep overlay hidden until we actually decode a valid latency value.
     probeEl.classList.add('hidden');
     clockOffsetSamples = []; latencySamples = []; lastValidAt = 0;
     probeChannel.onopen = () => {
@@ -157,7 +165,7 @@
       probeCanvas = document.createElement('canvas');
       probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true, alpha: false });
     }
-    if (!probeDecodeTimer) probeDecodeTimer = setInterval(decodeFrame, 100);  // 10 Hz
+    if (!probeDecodeTimer) probeDecodeTimer = setInterval(decodeFrame, 100);
   }
 
   function stopProbe() {
@@ -179,7 +187,6 @@
     const t3 = performance.now();
     const rtt = t3 - m.t1;
     const oneWay = rtt / 2;
-    // perf_R = perf_S + offset ; at pong-recv: perf_S ≈ m.t2 + oneWay
     const offset = t3 - (m.t2 + oneWay);
     clockOffsetSamples.push(offset);
     if (clockOffsetSamples.length > 10) clockOffsetSamples.shift();
@@ -204,9 +211,7 @@
       const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
       if (lum > 128) value |= (1 << i);
     }
-    // value is the sender's performance.now() in ms at encode time (unsigned 32-bit)
     const sentMs = (value >>> 0);
-    // Convert sender timestamp to receiver timeline.
     const receivedSenderTime = sentMs + clockOffset;
     const latency = performance.now() - receivedSenderTime;
     if (latency > -50 && latency < 2000 && clockOffsetSamples.length >= 3) {

@@ -14,6 +14,7 @@
   select,button{font:inherit;background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:10px;padding:10px 14px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
   button.primary{background:#2a8a55;border-color:#3aab6c}
   button.primary.stop{background:#a02a2a;border-color:#c64242}
+  button.tog{background:#2a6a8a;border-color:#3a8aab}
   button:disabled{opacity:.4}
   select{max-width:42vw;text-overflow:ellipsis}
   #stat{position:fixed;bottom:8px;left:8px;right:8px;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:6px;z-index:10;white-space:pre-wrap;color:#eaeaea}
@@ -21,7 +22,6 @@
   #dot.on{background:#4eff7a;box-shadow:0 0 8px #4eff7a88}
   #dot.warn{background:#ffaa30}
   #status{font-size:13px;opacity:.85}
-  /* Screen-off / OLED-saver mode: blank everything but keep the camera streaming. */
   body.blanked{background:#000}
   body.blanked .bar,body.blanked #preview,body.blanked #stat{display:none}
   body.blanked #tap{display:flex}
@@ -47,7 +47,9 @@
     <option value="VP9">VP9</option>
     <option value="AV1">AV1</option>
   </select>
+  <button id="audio" title="Include microphone / system audio in the stream">Audio: off</button>
   <button id="go" class="primary">Start</button>
+  <button id="screen" title="Share screen instead of camera">Screen</button>
   <button id="blank" hidden title="Hide preview to save OLED power">Screen off</button>
   <button id="lock" hidden title="Lock current screen orientation">Lock</button>
   <button id="probe" hidden title="Embed timestamp barcode in stream for end-to-end latency measurement">Probe</button>
@@ -61,45 +63,90 @@
   const setStatus = (s) => { $('status').textContent = s; };
   const setDot = (cls) => { $('dot').className = ''; if (cls) $('dot').classList.add(cls); };
 
-  let pc = null, ws = null, sender = null, stream = null, statsTimer = null, wakeLock = null;
-  // Latency probe state
+  // ---- State ----
+  const pcs = new Map();     // peerId → { pc, sender, audioSender, dc }
+  let ws = null, stream = null, source = 'camera';
+  let audioEnabled = false;
+  let serverId = null, myPeerId = null, multiReceiverEnabled = false;
+  let wakeLock = null, statsTimer = null;
+  // Probe state — canvas + draw loop is shared; one data channel per pc.
   let probeActive = false, probeCanvas = null, probeCtx = null, probeStream = null;
-  let probeRaf = null, originalTrack = null, probeChannel = null;
-  // Server identity — when it changes across reconnects, the server was redeployed → reload.
-  let serverId = null;
+  let probeRaf = null, origVideoTrack = null;
+  let orientationLocked = false;
+  let deferredInstall = null;
 
-  // Mini session-storage helper used to auto-resume streaming/probe/blank across reloads
-  // (including the auto-reload that fires on deploy). sessionStorage clears with the tab,
-  // so we don't surprise users by auto-starting weeks-later visits.
+  // ---- Storage ----
+  const LS = {
+    get: (k, fb = null) => { try { const v = localStorage.getItem('reflektor:' + k); return v === null ? fb : JSON.parse(v); } catch { return fb; } },
+    set: (k, v) => { try { localStorage.setItem('reflektor:' + k, JSON.stringify(v)); } catch {} },
+  };
   const SS = {
-    get: (k, fb = null) => {
-      try {
-        const v = sessionStorage.getItem('reflektor:' + k);
-        return v === null ? fb : JSON.parse(v);
-      } catch { return fb; }
-    },
+    get: (k, fb = null) => { try { const v = sessionStorage.getItem('reflektor:' + k); return v === null ? fb : JSON.parse(v); } catch { return fb; } },
     set: (k, v) => { try { sessionStorage.setItem('reflektor:' + k, JSON.stringify(v)); } catch {} },
   };
+  function persistSelect(id) {
+    const el = $(id);
+    const key = 'reflektor:' + id;
+    const saved = localStorage.getItem(key);
+    if (saved && [...el.options].some(o => o.value === saved)) el.value = saved;
+    el.addEventListener('change', () => localStorage.setItem(key, el.value));
+  }
 
-  async function acquireWake() {
-    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
-  }
-  function releaseWake() {
-    if (wakeLock) { try { wakeLock.release(); } catch {} wakeLock = null; }
-  }
-  document.addEventListener('visibilitychange', async () => {
-    // Wake lock is auto-released when the page is hidden; re-acquire when visible.
-    if (!document.hidden && stream && !wakeLock) await acquireWake();
-  });
+  // ---- Helpers ----
+  function parseRes(v) { const m = v.match(/^(\d+)x(\d+)@(\d+)$/); return { w: +m[1], h: +m[2], fps: +m[3] }; }
 
-  function setBlanked(on) {
-    document.body.classList.toggle('blanked', on);
+  function preferCodec(transceiver, name) {
+    if (!RTCRtpSender.getCapabilities) return null;
+    const caps = RTCRtpSender.getCapabilities('video');
+    if (!caps) return null;
+    const re = new RegExp(name, 'i');
+    const wanted = caps.codecs.filter(c => re.test(c.mimeType));
+    if (wanted.length && transceiver.setCodecPreferences) {
+      transceiver.setCodecPreferences(wanted);
+      return wanted[0].mimeType;
+    }
+    return null;
   }
+
+  async function tuneSender(sender) {
+    if (!sender) return;
+    const params = sender.getParameters();
+    if (!params.encodings || !params.encodings[0]) params.encodings = [{}];
+    params.encodings[0].maxBitrate = 20_000_000;
+    params.encodings[0].priority = 'high';
+    params.encodings[0].networkPriority = 'high';
+    params.degradationPreference = 'maintain-framerate';
+    try { await sender.setParameters(params); } catch (e) { console.warn('setParameters', e); }
+  }
+
+  async function acquireWake() { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} }
+  function releaseWake() { if (wakeLock) { try { wakeLock.release(); } catch {} wakeLock = null; } }
+
+  // ---- Listings ----
+  async function listCams() {
+    try { const tmp = await navigator.mediaDevices.getUserMedia({ video: true }); tmp.getTracks().forEach(t => t.stop()); } catch {}
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const cams = devs.filter(d => d.kind === 'videoinput');
+    $('cam').innerHTML = cams.map((c, i) =>
+      `<option value="${c.deviceId}">${(c.label || 'Camera ' + (i+1)).replace(/\s*\(.+\)\s*$/,'')}</option>`
+    ).join('');
+    const rear = cams.find(c => /back|rear|environment/i.test(c.label));
+    if (rear) $('cam').value = rear.deviceId;
+  }
+
+  // ---- UI toggles ----
+  function setBlanked(on) { document.body.classList.toggle('blanked', on); }
   $('blank').onclick = (e) => { e.stopPropagation(); setBlanked(true); SS.set('blank', true); };
   $('tap').addEventListener('click', () => { setBlanked(false); SS.set('blank', false); });
 
-  // Orientation lock (must be triggered by a tap, in PWA or fullscreen).
-  let orientationLocked = false;
+  function setAudio(on) {
+    audioEnabled = on;
+    LS.set('audio', on);
+    $('audio').classList.toggle('tog', on);
+    $('audio').textContent = on ? 'Audio: on' : 'Audio: off';
+  }
+  $('audio').onclick = () => setAudio(!audioEnabled);
+
   async function toggleOrientationLock() {
     const so = screen.orientation;
     if (!so || !so.lock) { setStatus('orientation lock not supported'); return; }
@@ -118,14 +165,11 @@
       await so.lock(so.type);
       orientationLocked = true;
       $('lock').textContent = 'Unlock';
-    } catch (e) {
-      setStatus('lock failed: ' + e.message);
-    }
+    } catch (e) { setStatus('lock failed: ' + e.message); }
   }
   $('lock').onclick = toggleOrientationLock;
 
-  // PWA install handling
-  let deferredInstall = null;
+  // PWA install
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredInstall = e;
@@ -138,97 +182,53 @@
     deferredInstall = null;
     $('install').hidden = true;
   };
-  window.addEventListener('appinstalled', () => {
-    deferredInstall = null;
-    $('install').hidden = true;
-  });
+  window.addEventListener('appinstalled', () => { deferredInstall = null; $('install').hidden = true; });
   if ('serviceWorker' in navigator) {
     addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
   }
 
-  async function listCams() {
-    try {
-      const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
-      tmp.getTracks().forEach(t => t.stop());
-    } catch {}
-    const devs = await navigator.mediaDevices.enumerateDevices();
-    const cams = devs.filter(d => d.kind === 'videoinput');
-    $('cam').innerHTML = cams.map((c, i) =>
-      `<option value="${c.deviceId}">${(c.label || 'Camera ' + (i+1)).replace(/\s*\(.+\)\s*$/,'')}</option>`
-    ).join('');
-    const rear = cams.find(c => /back|rear|environment/i.test(c.label));
-    if (rear) $('cam').value = rear.deviceId;
-  }
-
-  // Remember the user's choices across reloads.
-  function persistSelect(id) {
-    const el = $(id);
-    const key = 'reflektor:' + id;
-    const saved = localStorage.getItem(key);
-    if (saved && [...el.options].some(o => o.value === saved)) el.value = saved;
-    el.addEventListener('change', () => localStorage.setItem(key, el.value));
-  }
-
-  function preferCodec(transceiver, name) {
-    if (!RTCRtpSender.getCapabilities) return null;
-    const caps = RTCRtpSender.getCapabilities('video');
-    if (!caps) return null;
-    const re = new RegExp(name, 'i');
-    const wanted = caps.codecs.filter(c => re.test(c.mimeType));
-    const rest   = caps.codecs.filter(c => !re.test(c.mimeType));
-    if (wanted.length && transceiver.setCodecPreferences) {
-      // Only the preferred codec — drop the rest so the receiver can't fall back to one it can't actually decode.
-      transceiver.setCodecPreferences(wanted);
-      return wanted[0].mimeType;
+  // ---- Acquire source ----
+  async function getSourceStream() {
+    const { w, h, fps } = parseRes($('res').value);
+    if (source === 'screen') {
+      return await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps, min: Math.min(30, fps) } },
+        audio: audioEnabled,
+      });
     }
-    return null;
+    const deviceId = $('cam').value;
+    return await navigator.mediaDevices.getUserMedia({
+      audio: audioEnabled,
+      video: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        width: { ideal: w }, height: { ideal: h },
+        frameRate: { ideal: fps, min: Math.min(30, fps) },
+      },
+    });
   }
 
-  async function tuneSender() {
-    if (!sender) return;
-    const params = sender.getParameters();
-    if (!params.encodings || !params.encodings[0]) params.encodings = [{}];
-    params.encodings[0].maxBitrate = 20_000_000; // 20 Mbps cap, plenty for LAN
-    params.encodings[0].priority = 'high';
-    params.encodings[0].networkPriority = 'high';
-    params.degradationPreference = 'maintain-framerate';
-    try { await sender.setParameters(params); } catch (e) { console.warn('setParameters', e); }
-  }
-
-  function parseRes(v) {
-    const m = v.match(/^(\d+)x(\d+)@(\d+)$/);
-    return { w: +m[1], h: +m[2], fps: +m[3] };
-  }
-
-  async function start() {
-    $('go').disabled = true;
-    setStatus('opening camera…');
+  // ---- Start / Stop ----
+  async function start(src = 'camera') {
+    source = src;
+    $('go').disabled = true; $('screen').disabled = true;
+    setStatus(src === 'screen' ? 'opening screen…' : 'opening camera…');
     setDot('warn');
 
-    const { w, h, fps } = parseRes($('res').value);
-    const deviceId = $('cam').value;
-
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          width:  { ideal: w },
-          height: { ideal: h },
-          frameRate: { ideal: fps, min: Math.min(30, fps) },
-        },
-      });
-    } catch (e) {
-      setStatus('camera error: ' + e.message);
-      $('go').disabled = false;
+    try { stream = await getSourceStream(); }
+    catch (e) {
+      setStatus((src === 'screen' ? 'screen' : 'camera') + ' error: ' + e.message);
+      $('go').disabled = false; $('screen').disabled = false;
       return;
     }
+    const vt = stream.getVideoTracks()[0];
+    if (vt) vt.addEventListener('ended', () => stop());
+
     $('preview').srcObject = stream;
 
     setStatus('connecting…');
     ws = new WebSocket(`wss://${location.host}/ws?role=sender`);
     ws.onmessage = onWsMessage;
-    ws.onclose = () => { if (pc) setDot('warn'); };
+    ws.onclose = () => { setDot('warn'); };
     await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws')); });
 
     setStatus('waiting for receiver…');
@@ -238,66 +238,121 @@
     $('go').classList.add('stop');
     $('go').disabled = false;
     $('go').onclick = stop;
+    $('screen').hidden = true;
+    $('audio').disabled = true;
     $('blank').hidden = false;
     $('lock').hidden = false;
     $('probe').hidden = false;
     SS.set('streaming', true);
+    SS.set('source', src);
   }
 
+  function stop() {
+    SS.set('streaming', false);
+    SS.set('probe', false);
+    SS.set('blank', false);
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+    for (const { pc } of pcs.values()) { try { pc.close(); } catch {} }
+    pcs.clear();
+    if (ws) { try { ws.close(); } catch {} ws = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    releaseWake();
+    setBlanked(false);
+    $('preview').srcObject = null;
+    $('stat').textContent = '';
+    setStatus('stopped');
+    setDot('');
+    $('go').textContent = 'Start';
+    $('go').classList.remove('stop');
+    $('go').onclick = () => start('camera');
+    $('go').disabled = false;
+    $('screen').hidden = false;
+    $('screen').disabled = false;
+    $('audio').disabled = false;
+    $('blank').hidden = true;
+    if (orientationLocked) { try { screen.orientation.unlock(); } catch {} orientationLocked = false; }
+    $('lock').textContent = 'Lock';
+    $('lock').hidden = true;
+    if (probeActive) { stopProbe(); probeActive = false; }
+    $('probe').textContent = 'Probe';
+    $('probe').classList.remove('stop');
+    $('probe').hidden = true;
+    probeCanvas = null; probeCtx = null;
+  }
+
+  // ---- WS handling ----
   async function onWsMessage({ data }) {
-    let msg;
-    try { msg = JSON.parse(data); } catch { return; }
-    if (msg.type === 'hello') {
+    let msg; try { msg = JSON.parse(data); } catch { return; }
+    const { type } = msg;
+    if (type === 'hello') {
       if (serverId && serverId !== msg.serverId) {
         console.log('[reflektor] server restarted, reloading');
         location.reload();
         return;
       }
       serverId = msg.serverId;
-    } else if (msg.type === 'negotiate') {
-      await negotiate();
-    } else if (msg.type === 'answer' && pc) {
-      await pc.setRemoteDescription(msg).catch((e) => console.warn('setRemoteDescription', e));
-    } else if (msg.type === 'ice' && pc) {
-      await pc.addIceCandidate(msg.candidate).catch(() => {});
+      myPeerId = msg.peerId;
+      multiReceiverEnabled = !!msg.multiReceiver;
+    } else if (type === 'peer-joined') {
+      await createPcFor(msg.peerId);
+    } else if (type === 'peer-left') {
+      const ctx = pcs.get(msg.peerId);
+      if (ctx) { try { ctx.pc.close(); } catch {} pcs.delete(msg.peerId); }
+    } else if (type === 'answer') {
+      const ctx = pcs.get(msg.from);
+      if (ctx) await ctx.pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(e => console.warn('setRemoteDescription', e));
+    } else if (type === 'ice') {
+      const ctx = pcs.get(msg.from);
+      if (ctx) await ctx.pc.addIceCandidate(msg.candidate).catch(() => {});
     }
   }
 
-  async function negotiate() {
-    if (!stream || !ws || ws.readyState !== 1) return;
-    if (pc) { try { pc.close(); } catch {} pc = null; sender = null; probeChannel = null; }
-    setStatus('negotiating…');
-    setDot('warn');
+  async function createPcFor(peerId) {
+    if (!stream) return;
+    const existing = pcs.get(peerId);
+    if (existing) { try { existing.pc.close(); } catch {} pcs.delete(peerId); }
 
-    pc = new RTCPeerConnection({ iceServers: [] });
-    const track = stream.getVideoTracks()[0];
-    const tx = pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
-    const chosen = preferCodec(tx, $('codec').value);
-    sender = tx.sender;
+    const pc = new RTCPeerConnection({ iceServers: [] });
 
-    // Data channel for clock sync (receiver pings, we pong).
-    probeChannel = pc.createDataChannel('probe', { ordered: false, maxRetransmits: 0 });
-    probeChannel.onmessage = onProbeMessage;
+    const initialVideoTrack = probeActive && probeStream
+      ? probeStream.getVideoTracks()[0]
+      : stream.getVideoTracks()[0];
+    const vtx = pc.addTransceiver(initialVideoTrack, { direction: 'sendonly', streams: [stream] });
+    preferCodec(vtx, $('codec').value);
+    const sender = vtx.sender;
+
+    let audioSender = null;
+    const at = stream.getAudioTracks()[0];
+    if (at) {
+      const atx = pc.addTransceiver(at, { direction: 'sendonly', streams: [stream] });
+      audioSender = atx.sender;
+    }
+
+    const dc = pc.createDataChannel('probe', { ordered: false, maxRetransmits: 0 });
+    dc.onmessage = (ev) => onProbeMessage(ev, dc);
 
     pc.onicecandidate = (e) => {
-      if (e.candidate && ws.readyState === 1) ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+      if (e.candidate && ws?.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'ice', to: peerId, candidate: e.candidate }));
+      }
     };
     pc.onconnectionstatechange = () => {
-      setStatus('webrtc: ' + pc.connectionState);
-      if (pc.connectionState === 'connected') {
-        setDot('on'); tuneSender();
-        if (probeActive) startProbe();  // re-arm composite after fresh pc
-      }
-      else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setDot('warn');
+      const s = pc.connectionState;
+      setStatus(`webrtc ${peerId.slice(0, 4)}: ${s}`);
+      if (s === 'connected') { setDot('on'); tuneSender(sender); }
+      else if (s === 'failed' || s === 'disconnected') setDot('warn');
     };
+
+    pcs.set(peerId, { pc, sender, audioSender, dc });
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    ws.send(JSON.stringify(offer));
-    setStatus('offer sent' + (chosen ? ' (' + chosen + ')' : ''));
+    if (ws?.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'offer', to: peerId, sdp: offer.sdp }));
+    }
   }
 
-  // ----- Latency probe: composite (camera + 32-bit timestamp barcode) replaces the raw track -----
+  // ---- Probe ----
   function drawBarcode(ctx, w, h, tMs) {
     const bits = 32;
     const colW = w / bits;
@@ -312,7 +367,7 @@
   }
 
   async function startProbe() {
-    if (!stream || !sender) return;
+    if (!stream || pcs.size === 0) return;
     const { w, h } = parseRes($('res').value);
     if (!probeCanvas) {
       probeCanvas = document.createElement('canvas');
@@ -328,26 +383,29 @@
       probeRaf = requestAnimationFrame(draw);
     };
     probeStream = probeCanvas.captureStream(60);
-    const newTrack = probeStream.getVideoTracks()[0];
-    if (!originalTrack) originalTrack = sender.track;
-    try { await sender.replaceTrack(newTrack); } catch (e) { console.warn('replaceTrack', e); }
+    const canvasTrack = probeStream.getVideoTracks()[0];
+    if (!origVideoTrack) origVideoTrack = stream.getVideoTracks()[0];
+    for (const { sender } of pcs.values()) {
+      try { await sender.replaceTrack(canvasTrack); } catch (e) { console.warn('replaceTrack', e); }
+    }
     probeRaf = requestAnimationFrame(draw);
   }
 
   async function stopProbe() {
     if (probeRaf) { cancelAnimationFrame(probeRaf); probeRaf = null; }
     if (probeStream) { probeStream.getTracks().forEach(t => t.stop()); probeStream = null; }
-    if (sender && originalTrack) {
-      try { await sender.replaceTrack(originalTrack); } catch {}
+    if (origVideoTrack) {
+      for (const { sender } of pcs.values()) {
+        try { await sender.replaceTrack(origVideoTrack); } catch {}
+      }
     }
-    originalTrack = null;
+    origVideoTrack = null;
   }
 
-  function onProbeMessage(ev) {
-    let m;
-    try { m = JSON.parse(ev.data); } catch { return; }
-    if (m.type === 'ping' && probeChannel?.readyState === 'open') {
-      probeChannel.send(JSON.stringify({ type: 'pong', t1: m.t1, t2: performance.now() }));
+  function onProbeMessage(ev, dc) {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'ping' && dc.readyState === 'open') {
+      dc.send(JSON.stringify({ type: 'pong', t1: m.t1, t2: performance.now() }));
     }
   }
 
@@ -360,40 +418,14 @@
   }
   $('probe').onclick = () => setProbe(!probeActive);
 
-  function stop() {
-    SS.set('streaming', false);
-    SS.set('probe', false);
-    SS.set('blank', false);
-    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-    if (pc)     { try { pc.close(); } catch {} pc = null; }
-    if (ws)     { try { ws.close(); } catch {} ws = null; }
-    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-    sender = null;
-    releaseWake();
-    setBlanked(false);
-    $('preview').srcObject = null;
-    $('stat').textContent = '';
-    setStatus('stopped');
-    setDot('');
-    $('go').textContent = 'Start';
-    $('go').classList.remove('stop');
-    $('go').onclick = start;
-    $('blank').hidden = true;
-    if (orientationLocked) { try { screen.orientation.unlock(); } catch {} orientationLocked = false; }
-    $('lock').textContent = 'Lock';
-    $('lock').hidden = true;
-    if (probeActive) { stopProbe(); probeActive = false; }
-    $('probe').textContent = 'Probe';
-    $('probe').classList.remove('stop');
-    $('probe').hidden = true;
-  }
-
+  // ---- Stats: aggregate from first pc (representative) ----
   function startStats() {
     if (statsTimer) clearInterval(statsTimer);
     let lastBytes = 0, lastTs = 0, lastFrames = 0;
     statsTimer = setInterval(async () => {
-      if (!pc) return;
-      const stats = await pc.getStats();
+      const first = pcs.values().next().value;
+      if (!first) return;
+      const stats = await first.pc.getStats();
       const codecs = new Map();
       let row, remote;
       stats.forEach(r => { if (r.type === 'codec') codecs.set(r.id, r); });
@@ -408,12 +440,13 @@
       lastTs = row.timestamp; lastBytes = row.bytesSent; lastFrames = row.framesEncoded;
       const c = codecs.get(row.codecId);
       const mime = c ? c.mimeType.replace('video/','') : '?';
-      const encMs = row.totalEncodeTime && row.framesEncoded
-        ? (1000 * row.totalEncodeTime / row.framesEncoded) : null;
+      const encMs = row.totalEncodeTime && row.framesEncoded ? (1000 * row.totalEncodeTime / row.framesEncoded) : null;
       const rttMs = remote?.roundTripTime != null ? remote.roundTripTime * 1000
                   : (row.roundTripTime != null ? row.roundTripTime * 1000 : null);
+      const n = pcs.size;
       $('stat').textContent =
-        `${row.frameWidth||0}x${row.frameHeight||0}  ${fps.toFixed(0)}fps  ${bitrate.toFixed(2)} Mbps  ${mime}\n` +
+        `${row.frameWidth||0}x${row.frameHeight||0}  ${fps.toFixed(0)}fps  ${bitrate.toFixed(2)} Mbps  ${mime}` +
+        `${n > 1 ? '  ×' + n + ' receivers' : ''}\n` +
         `enc ${encMs != null ? encMs.toFixed(1)+'ms' : '?'}  ` +
         `rtt ${rttMs != null ? rttMs.toFixed(0)+'ms' : '?'}  ` +
         `net~${rttMs != null ? (rttMs/2).toFixed(0)+'ms' : '?'}  ` +
@@ -421,10 +454,15 @@
     }, 1000);
   }
 
-  $('go').onclick = start;
+  // ---- Init ----
+  $('go').onclick = () => start('camera');
+  $('screen').onclick = () => start('screen');
+  setAudio(LS.get('audio', false));
   document.addEventListener('visibilitychange', () => {
-    // Some Androids stop the camera in background; nothing we can do but flag it.
-    if (document.hidden && pc) setStatus('backgrounded — video may stall');
+    if (document.hidden && pcs.size > 0) setStatus('backgrounded — video may stall');
+  });
+  document.addEventListener('visibilitychange', async () => {
+    if (!document.hidden && stream && !wakeLock) await acquireWake();
   });
   persistSelect('res');
   persistSelect('codec');
@@ -432,10 +470,10 @@
     .then(async () => {
       persistSelect('cam');
       setStatus('ready');
-      // Auto-resume if this tab was streaming before the reload (manual or auto-deploy).
       if (SS.get('streaming')) {
+        const src = SS.get('source', 'camera');
         try {
-          await start();
+          await start(src);
           if (SS.get('probe')) await setProbe(true);
           if (SS.get('blank')) setBlanked(true);
         } catch (e) {
