@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); thi
 
 ## [Unreleased]
 
+### Fixed
+- Run `tini` as PID 1 (`ENTRYPOINT ["/sbin/tini", "--", …]`) so the healthcheck's `ssl_client` TLS helpers are reaped. Previously, with `node` as PID 1 and no init, each `wget https://…/healthz` probe leaked a zombie every 30s until PID exhaustion made the healthcheck unable to `fork()` — the container flipped to `unhealthy` while the server itself kept serving fine.
+
 ## [0.1.1] — 2026-05-20
 
 ### Fixed
