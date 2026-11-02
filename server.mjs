@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { createServer as createHttpServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -220,7 +221,22 @@ const httpRedirector = createHttpServer((req, res) => {
   res.end();
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+// The HTTPS port also answers plain HTTP with a redirect, so typing
+// http://<ip>:8443 lands on HTTPS instead of a garbled "invalid response".
+// A TLS connection always opens with a handshake record (first byte 0x16).
+const portMux = createNetServer((sock) => {
+  sock.setTimeout(10_000, () => sock.destroy());
+  sock.once('data', (buf) => {
+    sock.setTimeout(0);
+    sock.pause();
+    sock.unshift(buf);
+    (buf[0] === 0x16 ? server : httpRedirector).emit('connection', sock);
+    process.nextTick(() => sock.resume());
+  });
+  sock.on('error', () => {});
+});
+
+portMux.listen(PORT, '0.0.0.0', () => {
   httpRedirector.listen(HTTP_PORT, '0.0.0.0', () => {
     console.log(`\nReflektor up — HTTPS :${PORT}, HTTP :${HTTP_PORT} (redirects to HTTPS)`);
     console.log(`server id ${SERVER_ID}`);
