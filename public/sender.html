@@ -50,6 +50,7 @@
   <button id="audio" title="Include microphone / system audio in the stream">Audio: off</button>
   <button id="go" class="primary">Start</button>
   <button id="screen" title="Share screen instead of camera">Screen</button>
+  <button id="torch" hidden title="Turn the camera flash on for illumination">Flash</button>
   <button id="blank" hidden title="Hide preview to save OLED power">Screen off</button>
   <button id="lock" hidden title="Lock current screen orientation">Lock</button>
   <button id="probe" hidden title="Embed timestamp barcode in stream for end-to-end latency measurement">Probe</button>
@@ -73,6 +74,7 @@
   let probeActive = false, probeCanvas = null, probeCtx = null, probeStream = null;
   let probeRaf = null, origVideoTrack = null;
   let orientationLocked = false;
+  let torchOn = false;
   let deferredInstall = null;
 
   // ---- Storage ----
@@ -169,6 +171,37 @@
   }
   $('lock').onclick = toggleOrientationLock;
 
+  // Torch is a per-track capability: only the rear camera exposes it, and
+  // getCapabilities is missing on some browsers.
+  function torchTrack() {
+    if (source !== 'camera' || !stream) return null;
+    const t = stream.getVideoTracks()[0];
+    if (!t || t.readyState !== 'live' || typeof t.getCapabilities !== 'function') return null;
+    return t.getCapabilities().torch ? t : null;
+  }
+  function renderTorch() {
+    const supported = !!torchTrack();
+    $('torch').hidden = !stream || source !== 'camera';
+    $('torch').disabled = !supported;
+    $('torch').title = supported ? 'Turn the camera flash on for illumination' : 'Flash not available on this camera';
+    $('torch').classList.toggle('tog', torchOn);
+    $('torch').textContent = torchOn ? 'Flash: on' : 'Flash';
+  }
+  async function setTorch(on) {
+    const t = torchTrack();
+    if (!t) { torchOn = false; renderTorch(); return; }
+    try {
+      await t.applyConstraints({ advanced: [{ torch: on }] });
+      torchOn = on;
+    } catch (e) {
+      torchOn = false;
+      setStatus('flash failed: ' + e.message);
+    }
+    SS.set('torch', torchOn);
+    renderTorch();
+  }
+  $('torch').onclick = () => setTorch(!torchOn);
+
   // PWA install
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
@@ -244,6 +277,8 @@
     $('blank').hidden = false;
     $('lock').hidden = false;
     $('probe').hidden = false;
+    torchOn = false;
+    renderTorch();
     SS.set('streaming', true);
     SS.set('source', src);
   }
@@ -252,6 +287,7 @@
     SS.set('streaming', false);
     SS.set('probe', false);
     SS.set('blank', false);
+    SS.set('torch', false);
     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
     for (const { pc } of pcs.values()) { try { pc.close(); } catch {} }
     pcs.clear();
@@ -279,6 +315,8 @@
     $('probe').classList.remove('stop');
     $('probe').hidden = true;
     probeCanvas = null; probeCtx = null;
+    torchOn = false;
+    renderTorch();
   }
 
   // ---- WS handling ----
@@ -483,6 +521,7 @@
           await start(src);
           if (SS.get('probe')) await setProbe(true);
           if (SS.get('blank')) setBlanked(true);
+          if (SS.get('torch')) await setTorch(true);
         } catch (e) {
           console.warn('[reflektor] auto-resume failed:', e);
           SS.set('streaming', false);
