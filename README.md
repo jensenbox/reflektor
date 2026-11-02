@@ -27,7 +27,7 @@ Then on each device:
 | Phone / sender | `https://reflektor.local:8443/sender.html` |
 | TV / receiver  | `https://reflektor.local:8443/receiver.html` |
 | Chooser        | `https://reflektor.local:8443/` |
-| HTTP → HTTPS   | `http://reflektor.local:8080/` |
+| HTTP → HTTPS   | `http://reflektor.local:8080/` or `http://reflektor.local:8443/` |
 | CA cert        | `http://reflektor.local:8080/ca.crt` |
 | Health probe   | `https://reflektor.local:8443/healthz` |
 

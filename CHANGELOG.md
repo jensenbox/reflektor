@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); thi
 ## [Unreleased]
 
 ### Added
+- Plain HTTP requests to the HTTPS port (e.g. `http://192.168.1.10:8443/`) now get a 301 to the HTTPS URL instead of a broken response. The port sniffs the first byte of each connection to tell TLS from HTTP.
 - Sender: "Flash" toggle turns on the phone's camera LED (MediaStreamTrack `torch` constraint) while broadcasting. Shown only for camera streams and disabled when the active camera has no torch (e.g. front camera); resets on stop and survives an auto-reload.
 
 ### Fixed
