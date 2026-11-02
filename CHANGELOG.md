@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); thi
 
 ## [Unreleased]
 
+### Added
+- Sender: "Flash" toggle turns on the phone's camera LED (MediaStreamTrack `torch` constraint) while broadcasting. Shown only for camera streams and disabled when the active camera has no torch (e.g. front camera); resets on stop and survives an auto-reload.
+
 ### Fixed
 - Run `tini` as PID 1 (`ENTRYPOINT ["/sbin/tini", "--", …]`) so the healthcheck's `ssl_client` TLS helpers are reaped. Previously, with `node` as PID 1 and no init, each `wget https://…/healthz` probe leaked a zombie every 30s until PID exhaustion made the healthcheck unable to `fork()` — the container flipped to `unhealthy` while the server itself kept serving fine.
 
